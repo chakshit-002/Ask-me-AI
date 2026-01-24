@@ -17,7 +17,8 @@ async function queryMemory({queryVector,limit,metadata}){
     const data = await askMeChatAIIndex.query({
         vector : queryVector,
         topK : limit,
-        filter: metadata ? {metadata} : undefined,
+        // filter: metadata ? {metadata} : undefined,
+        filter: metadata ? metadata : undefined,
         includeMetadata: true
     })
 

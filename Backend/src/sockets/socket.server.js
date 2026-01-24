@@ -45,23 +45,17 @@ async function initSocketServer(httpServer) {
                     return socket.emit("error_message", { message: "Content and Chat ID are required" });
                 }
 
-                // 2. Save User Message DB mei
-                const message = await messageModel.create({
-                    chat: messagePayload.chat,
-                    user: socket.user._id,
-                    content: messagePayload.content,
-                    role: "user"
-                });
-
-                //vector creation 
-                const vectors = await aiService.generateVectors(messagePayload.content);
+                // 2. Save User Message DB mei ,vector creation 
+                const [message, vectors] = await Promise.all([
+                    messageModel.create({
+                        chat: messagePayload.chat,
+                        user: socket.user._id,
+                        content: messagePayload.content,
+                        role: "user"
+                    }),
+                    aiService.generateVectors(messagePayload.content)
+                ]);
                 console.log("vectors generated",vectors);
-
-                const memory = await queryMemory({
-                    queryVector : vectors,
-                    limit:3,
-                    metadata:{}
-                })
 
                 // saving  in vector memory 
                 await createMemory({
@@ -73,18 +67,53 @@ async function initSocketServer(httpServer) {
                         text: messagePayload.content
                     }
                 })
-                console.log("memory fetched",memory);
+    
 
-                // 3. Get History for Context
-               const chatHistory = (await messageModel.find({chat: messagePayload.chat}).sort({createdAt: -1}).limit(20).lean()).reverse();
+
+                // 3. Query for related data in pinecone & Get History for Context
+             
+                const [memory, chatHistory] = await Promise.all([
+                    queryMemory({
+                        queryVector : vectors,
+                        limit: 3,
+                        metadata: {user:socket.user._id.toString()}
+                    }),
+                    messageModel.find({chat: messagePayload.chat}).sort({createdAt:-1}).limit(20).lean().then(res => res.reverse())
+                ]);
+                    console.log("memory fetched",memory);
+               //STM -> 
+               const stm = chatHistory.map(item => {
+                    return {
+                        role: item.role,
+                        parts: [{text: item.content}]
+                    }
+               })
+
+               //LTM 
+               const ltm = [
+                {
+                    role:"user",
+                    parts: [{
+                        text: `
+                        I am providing you with some of previous conversation as a context: Give reply base on it 
+
+                        ${memory.map(mem => mem.metadata.text).join("\n")}
+
+                        `
+                    }]
+                }
+               ]
+
 
                 // 4. Generate AI Response with Specific Error Catching
                 let response;
                 try {
-                    response = await aiService.generateResponse(chatHistory.map(item => ({
-                        role: item.role,
-                        parts: [{ text: item.content }]
-                    })));
+                    // response = await aiService.generateResponse(chatHistory.map(item => ({
+                    //     role: item.role,
+                    //     parts: [{ text: item.content }]
+                    // })));
+                    response = await aiService.generateResponse([...ltm,...stm])
+
                 } catch (aiErr) {
                     console.error("Gemini API Error:", aiErr.message);
                     return socket.emit("ai_response", {
@@ -93,17 +122,28 @@ async function initSocketServer(httpServer) {
                     });
                 }
 
-                // 5. Save and Emit AI Response
                 if (response) {
-                    const responseMessage = await messageModel.create({
-                        chat: messagePayload.chat,
-                        user: socket.user._id,
+                    
+                    // 5.Emit AI Response
+                      socket.emit("ai_response", {
                         content: response,
-                        role: "model"
+                        chat: messagePayload.chat
                     });
 
-                    // convert response in vector and saving response  in vector memory 
-                    const responseVectors = await aiService.generateVectors(response);
+                    // 6. Save AI Response to memory & generate its Vectors 
+                    const [responseMessage, responseVectors] = await Promise.all([
+                        messageModel.create({
+                            chat: messagePayload.chat,
+                            user: socket.user._id,
+                            content: response,
+                            role: "model"
+                        }),
+                        aiService.generateVectors(response)
+                    ])
+                   
+
+                  // saving response in vector memory
+                   
                     await createMemory({
                         vectors: responseVectors,
                         messageId: responseMessage._id,
@@ -114,10 +154,7 @@ async function initSocketServer(httpServer) {
                         }
                     })
 
-                    socket.emit("ai_response", {
-                        content: response,
-                        chat: messagePayload.chat
-                    });
+                  
                 }
 
             } catch (err) {
