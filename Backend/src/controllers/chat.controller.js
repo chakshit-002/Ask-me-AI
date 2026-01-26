@@ -19,6 +19,7 @@ async  function createChat(req,res){
             user: chat.user
         }
     })
+    console.log("Chat Created Successfully");
 }
 
 module.exports = {

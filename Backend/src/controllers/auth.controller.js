@@ -71,6 +71,7 @@ async function loginUser(req,res){
             }
         
     })
+    console.log("User loggedin Successfully")
 }
 
 
